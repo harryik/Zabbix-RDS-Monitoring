@@ -13,6 +13,8 @@ zabbix_export:
         One Zabbix agent master item runs the collector and returns JSON.
         Dependent items provide aggregate session counters and low-level discovery creates per-session state, idle time and logon time items.
 
+        Session instances are identified by a stable session_uid built from Windows Session ID and the session logon timestamp, preventing history from being mixed when Windows reuses a Session ID.
+
         The collector uses the Windows WTS API directly and does not require PowerShell or .NET.
       groups:
         - name: Templates
@@ -110,21 +112,21 @@ zabbix_export:
           lifetime: 1h
           lifetime_type: DELETE_AFTER
           enabled_lifetime_type: DISABLE_IMMEDIATELY
-          description: 'Discovers interactive Windows sessions from the master JSON. Lost sessions are disabled immediately and deleted after one hour.'
+          description: 'Discovers interactive Windows session instances from the master JSON. Lost sessions are disabled immediately and deleted after one hour.'
           item_prototypes:
             - uuid: 8f6eed4e02a84e1c9e65ef7855a151ad
               name: 'RDS session [{#SESSIONID}] {#USER} ({#SESSION}): State'
               type: DEPENDENT
-              key: 'windows.rds.session.state[{#SESSIONID}]'
+              key: 'windows.rds.session.state[{#SESSIONUID}]'
               delay: '0'
-              history: 30d
+              history: 7d
               trends: '0'
               value_type: CHAR
-              description: 'Current WTS connection state of the discovered session.'
+              description: 'Current WTS connection state of the discovered session instance.'
               preprocessing:
                 - type: JSONPATH
                   parameters:
-                    - '$[?(@.id == "{#SESSIONID}")].state.first()'
+                    - '$[?(@.session_uid == "{#SESSIONUID}")].state.first()'
                   error_handler: DISCARD_VALUE
                 - type: DISCARD_UNCHANGED_HEARTBEAT
                   parameters:
@@ -140,21 +142,23 @@ zabbix_export:
                   value: '{#SESSION}'
                 - tag: sessionid
                   value: '{#SESSIONID}'
+                - tag: sessionuid
+                  value: '{#SESSIONUID}'
                 - tag: user
                   value: '{#USER}'
             - uuid: 458bf83aa4bc487f98b4102814c1bdc4
               name: 'RDS session [{#SESSIONID}] {#USER} ({#SESSION}): Idle time'
               type: DEPENDENT
-              key: 'windows.rds.session.idle[{#SESSIONID}]'
+              key: 'windows.rds.session.idle[{#SESSIONUID}]'
               delay: '0'
-              history: 30d
+              history: 7d
               value_type: UNSIGNED
               units: s
-              description: 'Seconds since the last user input reported for the discovered session.'
+              description: 'Seconds since the last user input reported for the discovered session instance.'
               preprocessing:
                 - type: JSONPATH
                   parameters:
-                    - '$[?(@.id == "{#SESSIONID}")].idle_seconds.first()'
+                    - '$[?(@.session_uid == "{#SESSIONUID}")].idle_seconds.first()'
                   error_handler: DISCARD_VALUE
               master_item:
                 key: windows.rds.sessions.get
@@ -167,21 +171,23 @@ zabbix_export:
                   value: '{#SESSION}'
                 - tag: sessionid
                   value: '{#SESSIONID}'
+                - tag: sessionuid
+                  value: '{#SESSIONUID}'
                 - tag: user
                   value: '{#USER}'
             - uuid: 918bc64f79cc4c52a2c530c6f4d4de65
               name: 'RDS session [{#SESSIONID}] {#USER} ({#SESSION}): Logon time'
               type: DEPENDENT
-              key: 'windows.rds.session.logon[{#SESSIONID}]'
+              key: 'windows.rds.session.logon[{#SESSIONUID}]'
               delay: '0'
-              history: 30d
+              history: 7d
               trends: '0'
               value_type: CHAR
-              description: 'Local logon timestamp with UTC offset returned by the collector.'
+              description: 'Local logon timestamp with UTC offset returned by the collector for the discovered session instance.'
               preprocessing:
                 - type: JSONPATH
                   parameters:
-                    - '$[?(@.id == "{#SESSIONID}")].logon_time.first()'
+                    - '$[?(@.session_uid == "{#SESSIONUID}")].logon_time.first()'
                   error_handler: DISCARD_VALUE
                 - type: DISCARD_UNCHANGED_HEARTBEAT
                   parameters:
@@ -197,11 +203,15 @@ zabbix_export:
                   value: '{#SESSION}'
                 - tag: sessionid
                   value: '{#SESSIONID}'
+                - tag: sessionuid
+                  value: '{#SESSIONUID}'
                 - tag: user
                   value: '{#USER}'
           master_item:
             key: windows.rds.sessions.get
           lld_macro_paths:
+            - lld_macro: '{#SESSIONUID}'
+              path: $.session_uid
             - lld_macro: '{#SESSIONID}'
               path: $.id
             - lld_macro: '{#USER}'

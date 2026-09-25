@@ -10,7 +10,7 @@ The recommended setup is:
 rds-session.exe
       |
       v
-Windows: RDS sessions raw
+RDS: Sessions raw
       |
       +-- RDS: Total sessions
       +-- RDS: Active sessions
@@ -86,8 +86,27 @@ Then test the UserParameter through Zabbix Agent 2:
 Example output:
 
 ```json
-[{"id":"2","user":"CONTOSO\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
+[{"id":"2","session_uid":"2-1790350920","user":"CONTOSO\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
 ```
+
+The fields used for identity are:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `id` | `"2"` | Windows Session ID, kept as a string |
+| `session_uid` | `"2-1790350920"` | unique session instance identifier used by Zabbix LLD |
+| `user` | `"CONTOSO\\jdoe"` | interactive user |
+| `session` | `"rdp-tcp#5"` | Windows session / WinStation name |
+
+`session_uid` is generated as:
+
+```text
+Session ID + "-" + LogonTime converted from Windows FILETIME to Unix epoch seconds
+```
+
+The Unix epoch value is derived from the same WTS `LogonTime` value that is already used to generate the human-readable `logon_time`.
+
+This prevents data from two different logins from sharing the same Zabbix item history when Windows reuses a Session ID.
 
 The program emits UTF-8 JSON, stable English state names, and a locale-independent local timestamp with UTC offset.
 
@@ -164,23 +183,36 @@ discovers:
 
 | LLD macro | JSON field |
 |---|---|
+| `{#SESSIONUID}` | `session_uid` |
 | `{#SESSIONID}` | `id` |
 | `{#USER}` | `user` |
 | `{#SESSION}` | `session` |
+
+`{#SESSIONUID}` is the technical identity used in discovered item keys. The visible item name still contains the normal Windows Session ID, user and session name.
 
 A session that disappears from the JSON is disabled immediately and its discovered items are deleted after **1 hour**.
 
 ## 4. Per-session items
 
-For every discovered session, Zabbix creates three dependent items.
+For every discovered session instance, Zabbix creates three dependent items.
 
-Example for session ID 2:
+Example:
 
 ```text
 RDS session [2] CONTOSO\jdoe (rdp-tcp#5): State
 RDS session [2] CONTOSO\jdoe (rdp-tcp#5): Idle time
 RDS session [2] CONTOSO\jdoe (rdp-tcp#5): Logon time
 ```
+
+Their internal keys use the session instance UID:
+
+```text
+windows.rds.session.state[2-1790350920]
+windows.rds.session.idle[2-1790350920]
+windows.rds.session.logon[2-1790350920]
+```
+
+All three per-session items keep **7 days** of history.
 
 ### State
 
@@ -222,7 +254,21 @@ The value is stored as text because the collector deliberately includes the serv
 
 Unchanged values are kept with a 1-hour heartbeat.
 
-## 5. Tags
+## 5. Retention
+
+Default retention in the template:
+
+| Data | History |
+|---|---:|
+| Raw JSON | 1d |
+| Total / Active / Disconnected counters | 30d |
+| Per-session State | 7d |
+| Per-session Idle time | 7d |
+| Per-session Logon time | 7d |
+
+Lost discovered sessions are disabled immediately and deleted after 1 hour.
+
+## 6. Tags
 
 The template uses tags so RDS data can be filtered cleanly in Zabbix and Grafana.
 
@@ -237,15 +283,16 @@ scope       = summary
 Discovered session items additionally expose:
 
 ```text
-component = rds-session
-user      = {#USER}
-session   = {#SESSION}
-sessionid = {#SESSIONID}
+component  = rds-session
+user       = {#USER}
+session    = {#SESSION}
+sessionid  = {#SESSIONID}
+sessionuid = {#SESSIONUID}
 ```
 
-This makes it possible to filter or group data by user, session or Session ID without parsing long item names.
+This makes it possible to filter or group data by user, Windows Session ID or unique session instance without parsing long item names.
 
-## 6. Returned session states
+## 7. Returned session states
 
 The EXE returns WTS state names in English:
 
@@ -266,7 +313,7 @@ Sessions without an interactive user are ignored.
 
 Console sessions may be returned as well as RDP sessions.
 
-## 7. Collector exit codes
+## 8. Collector exit codes
 
 | Code | Meaning |
 |---:|---|
@@ -277,7 +324,7 @@ Console sessions may be returned as well as RDP sessions.
 
 A non-zero exit code is intentional. It prevents collection failures from being represented as a valid empty session list.
 
-## 8. Binary details
+## 9. Binary details
 
 - Architecture: **Windows x64**
 - Runtime: **native Win32**
