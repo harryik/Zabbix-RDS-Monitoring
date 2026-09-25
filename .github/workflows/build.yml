@@ -1,0 +1,121 @@
+name: Build Windows x64
+
+on:
+  push:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build rds-session.exe
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate Visual Studio C++ toolchain
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe was not found."
+          }
+
+          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+
+          if (-not $installPath) {
+            throw "Visual Studio C++ build tools were not found."
+          }
+
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvars64.bat"
+
+          if (-not (Test-Path $vcvars)) {
+            throw "vcvars64.bat was not found at: $vcvars"
+          }
+
+          "VCVARS=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile native x64 executable
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          cl /nologo /O2 /GS- /TC rds-session.c /link /NODEFAULTLIB /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /MACHINE:X64 kernel32.lib wtsapi32.lib /OUT:rds-session.exe
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ".\rds-session.exe")) {
+            throw "rds-session.exe was not created."
+          }
+
+          $size = (Get-Item ".\rds-session.exe").Length
+          if ($size -le 0) {
+            throw "rds-session.exe is empty."
+          }
+
+          Write-Host "Built rds-session.exe ($size bytes)"
+
+      - name: Create distribution package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ".\dist" -Force | Out-Null
+          New-Item -ItemType Directory -Path ".\package" -Force | Out-Null
+
+          Copy-Item ".\rds-session.exe" ".\dist\rds-session.exe"
+          Copy-Item ".\rds-session.exe" ".\package\rds-session.exe"
+          Copy-Item ".\rds-session.conf" ".\package\rds-session.conf"
+          Copy-Item ".\README.md" ".\package\README.md"
+          Copy-Item ".\ZABBIX_SETUP_EN.md" ".\package\ZABBIX_SETUP_EN.md"
+
+          Compress-Archive -Path ".\package\*" -DestinationPath ".\dist\rds-session-windows-x64.zip" -CompressionLevel Optimal -Force
+
+          $files = @(
+            ".\dist\rds-session.exe",
+            ".\dist\rds-session-windows-x64.zip"
+          )
+
+          $checksums = foreach ($file in $files) {
+            $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash *$([System.IO.Path]::GetFileName($file))"
+          }
+
+          $checksums | Set-Content ".\dist\SHA256SUMS.txt" -Encoding ascii
+          Get-Content ".\dist\SHA256SUMS.txt"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rds-session-windows-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach binaries to GitHub Release
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: build
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rds-session-windows-x64
+          path: dist
+
+      - name: Upload files to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$env:RELEASE_TAG" ".\dist\rds-session.exe" ".\dist\rds-session-windows-x64.zip" ".\dist\SHA256SUMS.txt" --clobber
