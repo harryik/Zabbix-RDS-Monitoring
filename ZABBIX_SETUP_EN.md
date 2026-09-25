@@ -2,9 +2,29 @@
 
 Default polling interval: **5 minutes**.
 
-This version uses a small native **x64 Windows executable** and the documented Windows Remote Desktop Services API (WTS API). It does not parse `quser`, does not start PowerShell, and does not use `.NET` or `Add-Type`.
+This project uses a small native **x64 Windows executable** and the documented Windows Remote Desktop Services API (WTS API). It does not parse `quser`, start PowerShell, or use .NET / Add-Type during polling.
 
-## 1. Files on each Windows Server
+The recommended setup is:
+
+```text
+rds-session.exe
+      |
+      v
+Windows: RDS sessions raw
+      |
+      +-- RDS: Total sessions
+      +-- RDS: Active sessions
+      +-- RDS: Disconnected sessions
+      |
+      +-- RDS: Session discovery
+             +-- State
+             +-- Idle time
+             +-- Logon time
+```
+
+Only the master item executes `rds-session.exe`. All other values are dependent items derived from the returned JSON.
+
+## 1. Install the collector on each Windows Server
 
 Create the scripts directory if it does not exist:
 
@@ -55,7 +75,9 @@ Test the executable directly:
 $LASTEXITCODE
 ```
 
-Then test it through Zabbix Agent 2:
+A successful run should return JSON and exit code `0`.
+
+Then test the UserParameter through Zabbix Agent 2:
 
 ```powershell
 & "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe" -t windows.rds.sessions.get
@@ -71,85 +93,157 @@ The program emits UTF-8 JSON, stable English state names, and a locale-independe
 
 If WTS session enumeration fails, the executable exits with a non-zero code and writes a diagnostic message to stderr instead of returning a misleading empty JSON array.
 
-## 2. Master item
+## 2. Import the Zabbix template
 
-Create this item in the Windows template:
+Import:
 
 ```text
-Name: Windows: RDS sessions raw
-Type: Zabbix agent
+zabbix_template_rds_sessions.yaml
+```
+
+The template export format is **Zabbix 7.0**.
+
+In Zabbix:
+
+```text
+Data collection -> Templates -> Import
+```
+
+Import the YAML file and then link:
+
+```text
+Windows RDS sessions by Zabbix agent 2
+```
+
+to each Windows Server that should be monitored.
+
+The template can be linked together with the standard Windows by Zabbix agent / agent active template.
+
+## 3. What the template creates
+
+### Master item
+
+```text
+RDS: Sessions raw
 Key: windows.rds.sessions.get
+Type: Zabbix agent
 Type of information: Text
 Update interval: 5m
 History: 1d
 ```
 
-This is the only item that runs `rds-session.exe`.
+This is the **only item that executes rds-session.exe**.
 
-To change the refresh rate later, change only the **Update interval** on this master item, for example `1m`, `5m`, or `10m`.
+To change the polling frequency, change only this item's update interval.
 
-## 3. Active session counter
-
-Create a dependent item:
+### Summary dependent items
 
 ```text
-Name: RDS: Active sessions
-Type: Dependent item
-Key: windows.rds.sessions.active
-Master item: Windows: RDS sessions raw
-Type of information: Numeric (unsigned)
+RDS: Total sessions
+RDS: Active sessions
+RDS: Disconnected sessions
 ```
 
-Preprocessing -> JSONPath:
+They update whenever the master item receives a new JSON payload and do not execute the collector again.
+
+Default history:
 
 ```text
-$[?(@.state == "Active")].length()
+30d
 ```
 
-Do not configure a separate update interval. It updates whenever the master item receives new JSON.
+### Session discovery
 
-## 4. Session discovery
-
-Create a discovery rule:
+The dependent LLD rule:
 
 ```text
-Name: Windows: RDS session discovery
-Type: Dependent item
-Key: windows.rds.sessions.discovery
-Master item: Windows: RDS sessions raw
-Disable lost resources: Immediately
-Delete lost resources: After 1h
+RDS: Session discovery
 ```
 
-Add these LLD macros:
+discovers:
 
-| Macro | JSONPath |
+| LLD macro | JSON field |
 |---|---|
-| `{#SESSIONID}` | `$.id` |
-| `{#USER}` | `$.user` |
-| `{#SESSION}` | `$.session` |
-| `{#STATE}` | `$.state` |
-| `{#LOGONTIME}` | `$.logon_time` |
+| `{#SESSIONID}` | `id` |
+| `{#USER}` | `user` |
+| `{#SESSION}` | `session` |
 
-## 5. Item prototype
+A session that disappears from the JSON is disabled immediately and its discovered items are deleted after **1 hour**.
 
-Inside the discovery rule create an item prototype:
+## 4. Per-session items
 
-```text
-Name: RDS session [{#SESSIONID}]: User={#USER}; Session={#SESSION}; State={#STATE}; Logon={#LOGONTIME}
-Type: Dependent item
-Key: windows.rds.session.idle[{#SESSIONID}]
-Master item: Windows: RDS sessions raw
-Type of information: Numeric (unsigned)
-Units: s
-History: 1d
-```
+For every discovered session, Zabbix creates three dependent items.
 
-Preprocessing -> JSONPath:
+Example for session ID 2:
 
 ```text
-$[?(@.id == "{#SESSIONID}")].idle_seconds.first()
+RDS session [2] CONTOSO\jdoe (rdp-tcp#5): State
+RDS session [2] CONTOSO\jdoe (rdp-tcp#5): Idle time
+RDS session [2] CONTOSO\jdoe (rdp-tcp#5): Logon time
 ```
+
+### State
+
+Example value:
+
+```text
+Active
+```
+
+The value is stored as text. Unchanged values are kept with a 1-hour heartbeat to avoid unnecessary history growth.
+
+### Idle time
+
+Example value:
+
+```text
+120
+```
+
+Units:
+
+```text
+s
+```
+
+Zabbix can display this as a human-readable duration.
+
+This is the primary metric for determining whether an active session has recently received keyboard or mouse input.
+
+### Logon time
+
+Example value:
+
+```text
+2026-09-25 17:42:00 +02:00
+```
+
+The value is stored as text because the collector deliberately includes the server-local time and UTC offset.
+
+Unchanged values are kept with a 1-hour heartbeat.
+
+## 5. Tags
+
+The template uses tags so RDS data can be filtered cleanly in Zabbix and Grafana.
+
+Summary items use:
+
+```text
+Application = RDS Sessions
+component   = rds
+scope       = summary
+```
+
+Discovered session items additionally expose:
+
+```text
+component = rds-session
+user      = {#USER}
+session   = {#SESSION}
+sessionid = {#SESSIONID}
+```
+
+This makes it possible to filter or group data by user, session or Session ID without parsing long item names.
 
 ## 6. Returned session states
 
@@ -170,6 +264,8 @@ Init
 
 Sessions without an interactive user are ignored.
 
+Console sessions may be returned as well as RDP sessions.
+
 ## 7. Collector exit codes
 
 | Code | Meaning |
@@ -188,8 +284,8 @@ A non-zero exit code is intentional. It prevents collection failures from being 
 - Required system DLLs: `KERNEL32.dll`, `WTSAPI32.dll`
 - No PowerShell process during polling
 - No .NET dependency
-- No `Add-Type`
+- No Add-Type
 - No temporary compiled DLLs
 - No network communication performed by the EXE
 
-The C source is included as `rds-session.c` for audit/rebuild purposes.
+The C source is included as `rds-session.c` for audit and rebuild purposes.
