@@ -14,6 +14,7 @@
 #define FALSE 0
 
 #define STD_OUTPUT_HANDLE ((DWORD)-11)
+#define STD_ERROR_HANDLE ((DWORD)-12)
 #define CP_UTF8 65001U
 
 #define WINSTATIONNAME_LENGTH 32
@@ -98,6 +99,7 @@ typedef char assert_wtsinfo_size[(sizeof(WTSINFOW) == 216) ? 1 : -1];
 
 __declspec(dllimport) HANDLE __stdcall GetStdHandle(DWORD nStdHandle);
 __declspec(dllimport) BOOL __stdcall WriteFile(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWrite, DWORD* lpNumberOfBytesWritten, LPVOID lpOverlapped);
+__declspec(dllimport) DWORD __stdcall GetLastError(void);
 __declspec(dllimport) void __stdcall ExitProcess(unsigned int uExitCode);
 __declspec(dllimport) BOOL __stdcall FileTimeToSystemTime(const FILETIME* lpFileTime, SYSTEMTIME* lpSystemTime);
 __declspec(dllimport) BOOL __stdcall SystemTimeToTzSpecificLocalTime(const void* lpTimeZoneInformation, const SYSTEMTIME* lpUniversalTime, SYSTEMTIME* lpLocalTime);
@@ -111,14 +113,79 @@ __declspec(dllimport) void __stdcall WTSFreeMemory(LPVOID pMemory);
 #define OUTPUT_CAPACITY 262144U
 #define UTF8_TEMP_CAPACITY 4096
 
+#define EXIT_OK 0U
+#define EXIT_ENUMERATION_FAILED 2U
+#define EXIT_OUTPUT_OVERFLOW 3U
+#define EXIT_WRITE_FAILED 4U
+
 static char g_output[OUTPUT_CAPACITY];
 static DWORD g_output_len = 0;
+static BOOL g_output_overflow = FALSE;
 static char g_utf8_temp[UTF8_TEMP_CAPACITY];
+
+static DWORD ascii_len(const char* s)
+{
+    DWORD n = 0;
+    if (!s) return 0;
+    while (s[n] != 0) ++n;
+    return n;
+}
+
+static BOOL write_all(HANDLE handle, const char* buffer, DWORD length)
+{
+    DWORD offset = 0;
+
+    if (handle == NULL || buffer == NULL) return FALSE;
+
+    while (offset < length) {
+        DWORD written = 0;
+        if (!WriteFile(handle, buffer + offset, length - offset, &written, NULL)) {
+            return FALSE;
+        }
+        if (written == 0) {
+            return FALSE;
+        }
+        offset += written;
+    }
+
+    return TRUE;
+}
+
+static void write_error_with_code(const char* message, DWORD code)
+{
+    HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
+    char digits[16];
+    int n = 0;
+
+    if (stderr_handle == NULL) return;
+
+    write_all(stderr_handle, "rds-session: ", 13);
+    write_all(stderr_handle, message, ascii_len(message));
+
+    if (code != 0) {
+        write_all(stderr_handle, " (Win32 error ", 14);
+        do {
+            digits[n++] = (char)('0' + (code % 10U));
+            code /= 10U;
+        } while (code > 0 && n < (int)sizeof(digits));
+        while (n > 0) {
+            char c = digits[--n];
+            write_all(stderr_handle, &c, 1);
+        }
+        write_all(stderr_handle, ")", 1);
+    }
+
+    write_all(stderr_handle, "\n", 1);
+}
 
 static void out_char(char c)
 {
-    if (g_output_len + 1U < OUTPUT_CAPACITY) {
+    if (g_output_overflow) return;
+
+    if (g_output_len < OUTPUT_CAPACITY) {
         g_output[g_output_len++] = c;
+    } else {
+        g_output_overflow = TRUE;
     }
 }
 
@@ -363,16 +430,23 @@ static void write_session_json(
     out_ascii("\"}");
 }
 
-static void collect_sessions(void)
+static DWORD collect_sessions(DWORD* win32_error)
 {
     WTS_SESSION_INFOW* sessions = NULL;
     DWORD count = 0;
     DWORD i;
     int first = 1;
 
+    *win32_error = 0;
+
+    if (!WTSEnumerateSessionsW(NULL, 0, 1, &sessions, &count)) {
+        *win32_error = GetLastError();
+        return EXIT_ENUMERATION_FAILED;
+    }
+
     out_char('[');
 
-    if (WTSEnumerateSessionsW(NULL, 0, 1, &sessions, &count) && sessions != NULL) {
+    if (sessions != NULL) {
         for (i = 0; i < count; ++i) {
             LPWSTR user = NULL;
             LPWSTR domain = NULL;
@@ -412,25 +486,49 @@ static void collect_sessions(void)
             if (session_name) WTSFreeMemory(session_name);
             if (domain) WTSFreeMemory(domain);
             if (user) WTSFreeMemory(user);
+
+            if (g_output_overflow) break;
         }
+
         WTSFreeMemory(sessions);
+    }
+
+    if (g_output_overflow) {
+        return EXIT_OUTPUT_OVERFLOW;
     }
 
     out_char(']');
     out_char('\n');
+
+    if (g_output_overflow) {
+        return EXIT_OUTPUT_OVERFLOW;
+    }
+
+    return EXIT_OK;
 }
 
 void mainCRTStartup(void)
 {
     HANDLE stdout_handle;
-    DWORD written = 0;
+    DWORD win32_error = 0;
+    DWORD result = collect_sessions(&win32_error);
 
-    collect_sessions();
-
-    stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (stdout_handle != NULL && g_output_len > 0) {
-        WriteFile(stdout_handle, g_output, g_output_len, &written, NULL);
+    if (result == EXIT_ENUMERATION_FAILED) {
+        write_error_with_code("failed to enumerate Windows sessions", win32_error);
+        ExitProcess(EXIT_ENUMERATION_FAILED);
     }
 
-    ExitProcess(0);
+    if (result == EXIT_OUTPUT_OVERFLOW) {
+        write_error_with_code("JSON output exceeded the internal 256 KiB buffer", 0);
+        ExitProcess(EXIT_OUTPUT_OVERFLOW);
+    }
+
+    stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!write_all(stdout_handle, g_output, g_output_len)) {
+        win32_error = GetLastError();
+        write_error_with_code("failed to write JSON to stdout", win32_error);
+        ExitProcess(EXIT_WRITE_FAILED);
+    }
+
+    ExitProcess(EXIT_OK);
 }
