@@ -52,6 +52,7 @@ Test the executable directly:
 
 ```powershell
 & "C:\Program Files\Zabbix Agent 2\scripts\rds-session.exe"
+$LASTEXITCODE
 ```
 
 Then test it through Zabbix Agent 2:
@@ -67,6 +68,8 @@ Example output:
 ```
 
 The program emits UTF-8 JSON, stable English state names, and a locale-independent local timestamp with UTC offset.
+
+If WTS session enumeration fails, the executable exits with a non-zero code and writes a diagnostic message to stderr instead of returning a misleading empty JSON array.
 
 ## 2. Master item
 
@@ -167,7 +170,18 @@ Init
 
 Sessions without an interactive user are ignored.
 
-## 7. Binary details
+## 7. Collector exit codes
+
+| Code | Meaning |
+|---:|---|
+| 0 | Success |
+| 2 | WTS session enumeration failed |
+| 3 | JSON output exceeded the internal 256 KiB buffer |
+| 4 | Writing JSON to stdout failed |
+
+A non-zero exit code is intentional. It prevents collection failures from being represented as a valid empty session list.
+
+## 8. Binary details
 
 - Architecture: **Windows x64**
 - Runtime: **native Win32**
