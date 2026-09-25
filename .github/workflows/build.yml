@@ -118,4 +118,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$env:RELEASE_TAG" ".\dist\rds-session.exe" ".\dist\rds-session-windows-x64.zip" ".\dist\SHA256SUMS.txt" --clobber
+          gh release upload "$env:RELEASE_TAG" ".\dist\rds-session.exe" ".\dist\rds-session-windows-x64.zip" ".\dist\SHA256SUMS.txt" --repo "$env:GITHUB_REPOSITORY" --clobber
