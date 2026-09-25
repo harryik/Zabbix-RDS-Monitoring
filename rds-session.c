@@ -3,7 +3,7 @@
  * Native, language-independent Windows session collector for Zabbix/Grafana.
  *
  * Output (UTF-8 JSON):
- * [{"id":"2","user":"DOMAIN\\\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
+ * [{"id":"2","session_uid":"2-1790348520","user":"DOMAIN\\\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
  *
  * Uses only documented Windows APIs from kernel32.dll and wtsapi32.dll.
  * No PowerShell, .NET, runtime installation, temporary DLLs, or Add-Type.
@@ -304,6 +304,19 @@ static unsigned long long filetime_to_u64(const FILETIME* ft)
     return ((unsigned long long)ft->dwHighDateTime << 32) | (unsigned long long)ft->dwLowDateTime;
 }
 
+static unsigned long long filetime_to_unix_seconds(LONGLONG value)
+{
+    const unsigned long long windows_to_unix_epoch = 116444736000000000ULL;
+    unsigned long long u;
+
+    if (value <= 0) return 0ULL;
+
+    u = (unsigned long long)value;
+    if (u <= windows_to_unix_epoch) return 0ULL;
+
+    return (u - windows_to_unix_epoch) / 10000000ULL;
+}
+
 static void out_logon_time_local(LONGLONG value)
 {
     FILETIME ft_utc;
@@ -403,8 +416,14 @@ static void write_session_json(
     unsigned long long idle_seconds,
     LONGLONG logon_time)
 {
+    unsigned long long logon_epoch = filetime_to_unix_seconds(logon_time);
+
     out_ascii("{\"id\":\"");
     out_u64((unsigned long long)id);
+    out_ascii("\",\"session_uid\":\"");
+    out_u64((unsigned long long)id);
+    out_char('-');
+    out_u64(logon_epoch);
     out_ascii("\",\"user\":\"");
 
     if (domain && domain[0] != 0) {
