@@ -15,6 +15,7 @@ RDS: Sessions raw
       +-- RDS: Total sessions
       +-- RDS: Active sessions
       +-- RDS: Disconnected sessions
+      +-- Trigger: No valid session data for 15 minutes
       |
       +-- RDS: Session discovery
              +-- State
@@ -110,7 +111,7 @@ This prevents data from two different logins from sharing the same Zabbix item h
 
 The program emits UTF-8 JSON, stable English state names, and a locale-independent local timestamp with UTC offset.
 
-If WTS session enumeration fails, the executable exits with a non-zero code and writes a diagnostic message to stderr instead of returning a misleading empty JSON array.
+If WTS session enumeration or a required per-session query fails, the executable exits with a non-zero code and writes a diagnostic message to stderr instead of returning a misleading JSON array. Sessions with an empty user name are still ignored.
 
 ## 2. Import the Zabbix template
 
@@ -151,9 +152,9 @@ Update interval: 5m
 History: 1d
 ```
 
-This is the **only item that executes rds-session.exe**.
+This is the **only item that executes rds-session.exe**. Its preprocessing accepts only a JSON array and leaves a valid value unchanged. Zabbix UserParameter captures stderr along with stdout and does not use the process exit code to reject text values, so this validation is required to detect collector errors.
 
-To change the polling frequency, change only this item's update interval.
+A warning trigger reports **no valid session data for 15 minutes** (three default polling intervals). It also detects a missing agent or collector output. To change the polling frequency, change this item's update interval and review the trigger period.
 
 ### Summary dependent items
 
@@ -321,8 +322,9 @@ Console sessions may be returned as well as RDP sessions.
 | 2 | WTS session enumeration failed |
 | 3 | JSON output exceeded the internal 256 KiB buffer |
 | 4 | Writing JSON to stdout failed |
+| 5 | Failed to query complete data for a user session |
 
-A non-zero exit code is intentional. It prevents collection failures from being represented as a valid empty session list.
+A non-zero exit code is useful when running the executable directly. In Zabbix, the master item's JSON validation detects the diagnostic text returned by UserParameter, and the no-data trigger alerts after 15 minutes without a valid value.
 
 ## 9. Binary details
 

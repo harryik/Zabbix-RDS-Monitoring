@@ -64,7 +64,7 @@ Per-session data:  7d
 
 Lost session resources are disabled immediately and deleted after 1 hour.
 
-The collector is still executed only once per polling interval.
+The master item validates that the collector returned a JSON array. A warning trigger fires after 15 minutes without a valid value (three default polling intervals). The collector is still executed only once per polling interval.
 
 The current template export format is **Zabbix 7.0**.
 
@@ -100,8 +100,9 @@ The collector deliberately fails instead of returning a misleading empty session
 | 2 | WTS session enumeration failed |
 | 3 | JSON output exceeded the internal buffer |
 | 4 | Writing JSON to stdout failed |
+| 5 | Failed to query complete data for a user session |
 
-Diagnostic messages are written to stderr.
+Diagnostic messages are written to stderr. Zabbix UserParameter does not use the process exit code to mark a text item unsupported; the template's master-item preprocessing validates the JSON output instead.
 
 ## Zabbix
 

@@ -106,9 +106,16 @@ __declspec(dllimport) BOOL __stdcall SystemTimeToTzSpecificLocalTime(const void*
 __declspec(dllimport) BOOL __stdcall SystemTimeToFileTime(const SYSTEMTIME* lpSystemTime, FILETIME* lpFileTime);
 __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags, LPCWCH lpWideCharStr, int cchWideChar, LPSTR lpMultiByteStr, int cbMultiByte, LPCCH lpDefaultChar, BOOL* lpUsedDefaultChar);
 
-__declspec(dllimport) BOOL __stdcall WTSEnumerateSessionsW(HANDLE hServer, DWORD Reserved, DWORD Version, WTS_SESSION_INFOW** ppSessionInfo, DWORD* pCount);
-__declspec(dllimport) BOOL __stdcall WTSQuerySessionInformationW(HANDLE hServer, DWORD SessionId, int WTSInfoClass, LPWSTR* ppBuffer, DWORD* pBytesReturned);
-__declspec(dllimport) void __stdcall WTSFreeMemory(LPVOID pMemory);
+/* Allow the Windows API calls to be replaced by fixtures in the test build. */
+#ifdef RDS_SESSION_TEST
+#define WTS_IMPORT
+#else
+#define WTS_IMPORT __declspec(dllimport)
+#endif
+WTS_IMPORT BOOL __stdcall WTSEnumerateSessionsW(HANDLE hServer, DWORD Reserved, DWORD Version, WTS_SESSION_INFOW** ppSessionInfo, DWORD* pCount);
+WTS_IMPORT BOOL __stdcall WTSQuerySessionInformationW(HANDLE hServer, DWORD SessionId, int WTSInfoClass, LPWSTR* ppBuffer, DWORD* pBytesReturned);
+WTS_IMPORT void __stdcall WTSFreeMemory(LPVOID pMemory);
+#undef WTS_IMPORT
 
 #define OUTPUT_CAPACITY 262144U
 #define UTF8_TEMP_CAPACITY 4096
@@ -117,6 +124,7 @@ __declspec(dllimport) void __stdcall WTSFreeMemory(LPVOID pMemory);
 #define EXIT_ENUMERATION_FAILED 2U
 #define EXIT_OUTPUT_OVERFLOW 3U
 #define EXIT_WRITE_FAILED 4U
+#define EXIT_SESSION_QUERY_FAILED 5U
 
 static char g_output[OUTPUT_CAPACITY];
 static DWORD g_output_len = 0;
@@ -391,12 +399,14 @@ static BOOL query_string(DWORD session_id, int info_class, LPWSTR* buffer)
     return TRUE;
 }
 
-static BOOL query_info(DWORD session_id, WTSINFOW** info)
+static BOOL query_info(DWORD session_id, WTSINFOW** info, DWORD* win32_error)
 {
     DWORD bytes = 0;
     LPWSTR raw = NULL;
     *info = NULL;
+    *win32_error = 0;
     if (!WTSQuerySessionInformationW(NULL, session_id, WTSSessionInfo, &raw, &bytes)) {
+        *win32_error = GetLastError();
         return FALSE;
     }
     if (raw == NULL || bytes < (DWORD)sizeof(WTSINFOW)) {
@@ -454,6 +464,7 @@ static DWORD collect_sessions(DWORD* win32_error)
     WTS_SESSION_INFOW* sessions = NULL;
     DWORD count = 0;
     DWORD i;
+    DWORD result = EXIT_OK;
     int first = 1;
 
     *win32_error = 0;
@@ -475,7 +486,12 @@ static DWORD collect_sessions(DWORD* win32_error)
             unsigned long long idle_seconds = 0ULL;
             LONGLONG logon_time = 0;
 
-            if (!query_string(sessions[i].SessionId, WTSUserName, &user) || user == NULL || user[0] == 0) {
+            if (!query_string(sessions[i].SessionId, WTSUserName, &user)) {
+                *win32_error = GetLastError();
+                result = EXIT_SESSION_QUERY_FAILED;
+                break;
+            }
+            if (user == NULL || user[0] == 0) {
                 if (user) WTSFreeMemory(user);
                 continue;
             }
@@ -483,33 +499,42 @@ static DWORD collect_sessions(DWORD* win32_error)
             query_string(sessions[i].SessionId, WTSDomainName, &domain);
             query_string(sessions[i].SessionId, WTSWinStationName, &session_name);
 
-            if (query_info(sessions[i].SessionId, &info) && info != NULL) {
+            if (!query_info(sessions[i].SessionId, &info, win32_error)) {
+                result = EXIT_SESSION_QUERY_FAILED;
+            } else if (filetime_to_unix_seconds(info->LogonTime) == 0ULL) {
+                /* A missing logon time cannot identify a session instance. */
+                result = EXIT_SESSION_QUERY_FAILED;
+            } else {
                 state = info->State;
                 idle_seconds = get_idle_seconds(info);
                 logon_time = info->LogonTime;
+
+                if (!first) out_char(',');
+                first = 0;
+
+                write_session_json(
+                    sessions[i].SessionId,
+                    domain,
+                    user,
+                    (session_name && session_name[0] != 0) ? session_name : sessions[i].pWinStationName,
+                    state,
+                    idle_seconds,
+                    logon_time);
             }
-
-            if (!first) out_char(',');
-            first = 0;
-
-            write_session_json(
-                sessions[i].SessionId,
-                domain,
-                user,
-                (session_name && session_name[0] != 0) ? session_name : sessions[i].pWinStationName,
-                state,
-                idle_seconds,
-                logon_time);
 
             if (info) WTSFreeMemory(info);
             if (session_name) WTSFreeMemory(session_name);
             if (domain) WTSFreeMemory(domain);
             if (user) WTSFreeMemory(user);
 
-            if (g_output_overflow) break;
+            if (result != EXIT_OK || g_output_overflow) break;
         }
 
         WTSFreeMemory(sessions);
+    }
+
+    if (result != EXIT_OK) {
+        return result;
     }
 
     if (g_output_overflow) {
@@ -535,6 +560,11 @@ void mainCRTStartup(void)
     if (result == EXIT_ENUMERATION_FAILED) {
         write_error_with_code("failed to enumerate Windows sessions", win32_error);
         ExitProcess(EXIT_ENUMERATION_FAILED);
+    }
+
+    if (result == EXIT_SESSION_QUERY_FAILED) {
+        write_error_with_code("failed to query complete Windows session data", win32_error);
+        ExitProcess(EXIT_SESSION_QUERY_FAILED);
     }
 
     if (result == EXIT_OUTPUT_OVERFLOW) {
