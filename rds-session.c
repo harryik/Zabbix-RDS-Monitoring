@@ -3,7 +3,7 @@
  * Native, language-independent Windows session collector for Zabbix/Grafana.
  *
  * Output (UTF-8 JSON):
- * [{"id":"2","session_uid":"2-1790348520","user":"DOMAIN\\\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
+ * [{"id":"2","session_uid":"2-1790350920","user":"DOMAIN\\\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
  *
  * Uses only documented Windows APIs from kernel32.dll and wtsapi32.dll.
  * No PowerShell, .NET, runtime installation, temporary DLLs, or Add-Type.
