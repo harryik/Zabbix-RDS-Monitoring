@@ -9,8 +9,24 @@ The collector uses the documented Windows WTS API directly. It does not parse `q
 Example UTF-8 JSON:
 
 ```json
-[{"id":"2","user":"CONTOSO\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
+[{"id":"2","session_uid":"2-1790350920","user":"CONTOSO\\jdoe","session":"rdp-tcp#5","state":"Active","idle_seconds":120,"logon_time":"2026-09-25 17:42:00 +02:00"}]
 ```
+
+`id` remains the Windows Session ID and is intentionally emitted as a string.
+
+`session_uid` identifies a specific session instance. It is built from:
+
+```text
+<Windows Session ID>-<logon time as Unix epoch seconds>
+```
+
+For example:
+
+```text
+2-1790350920
+```
+
+This prevents Zabbix history from being mixed when Windows later reuses the same Session ID for another login.
 
 Sessions without an interactive user are ignored. Console sessions may be returned as well as RDP sessions.
 
@@ -30,13 +46,23 @@ RDS: Active sessions
 RDS: Disconnected sessions
 ```
 
-Low-level discovery creates three items for every detected session:
+Low-level discovery identifies session instances using `session_uid` and creates three items for every detected session:
 
 ```text
 State
 Idle time
 Logon time
 ```
+
+Default history retention:
+
+```text
+Raw JSON:          1d
+Summary counters: 30d
+Per-session data:  7d
+```
+
+Lost session resources are disabled immediately and deleted after 1 hour.
 
 The collector is still executed only once per polling interval.
 
