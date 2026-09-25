@@ -71,6 +71,7 @@ jobs:
           Copy-Item ".\rds-session.exe" ".\package\rds-session.exe"
           Copy-Item ".\rds-session.conf" ".\package\rds-session.conf"
           Copy-Item ".\README.md" ".\package\README.md"
+          Copy-Item ".\LICENSE" ".\package\LICENSE"
           Copy-Item ".\ZABBIX_SETUP_EN.md" ".\package\ZABBIX_SETUP_EN.md"
           Copy-Item ".\zabbix_template_rds_sessions.yaml" ".\package\zabbix_template_rds_sessions.yaml"
 
