@@ -34,6 +34,24 @@ zabbix_export:
           trends: '0'
           value_type: TEXT
           description: 'Master JSON returned by rds-session.exe. This is the only item that executes the collector.'
+          preprocessing:
+            - type: JAVASCRIPT
+              parameters:
+                - |
+                  var sessions = JSON.parse(value);
+                  if (!Array.isArray(sessions)) {
+                      throw 'Expected a JSON array of sessions';
+                  }
+                  return value;
+          triggers:
+            - uuid: e47c3545727746df85d6c2993ee05b47
+              expression: 'nodata(/Windows RDS sessions by Zabbix agent 2/windows.rds.sessions.get,15m)=1'
+              name: 'RDS: No valid session data for 15 minutes'
+              priority: WARNING
+              description: 'The collector has not returned a valid JSON session array for three polling intervals.'
+              tags:
+                - tag: component
+                  value: rds
           tags:
             - tag: Application
               value: 'RDS Sessions'

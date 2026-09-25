@@ -61,6 +61,31 @@ jobs:
 
           Write-Host "Built rds-session.exe ($size bytes)"
 
+      - name: Test collector error handling
+        shell: cmd
+        run: |
+          call "%VCVARS%"
+          cl /nologo /O2 /GS- /TC tests\collector-tests.c /link /NODEFAULTLIB /SUBSYSTEM:CONSOLE /ENTRY:test_mainCRTStartup /MACHINE:X64 kernel32.lib /OUT:collector-tests.exe
+          .\collector-tests.exe
+
+      - name: Smoke test collector output
+        shell: pwsh
+        run: |
+          $payload = (& .\rds-session.exe) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            throw "rds-session.exe exited with code $LASTEXITCODE"
+          }
+
+          $document = [System.Text.Json.JsonDocument]::Parse($payload)
+          try {
+            if ($document.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Array) {
+              throw "Collector output is not a JSON array."
+            }
+          }
+          finally {
+            $document.Dispose()
+          }
+
       - name: Create distribution package
         shell: pwsh
         run: |
