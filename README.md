@@ -14,6 +14,34 @@ Example UTF-8 JSON:
 
 Sessions without an interactive user are ignored. Console sessions may be returned as well as RDP sessions.
 
+## Recommended Zabbix design
+
+Use the included importable template:
+
+```text
+zabbix_template_rds_sessions.yaml
+```
+
+It creates one master item that executes the collector and dependent items for:
+
+```text
+RDS: Total sessions
+RDS: Active sessions
+RDS: Disconnected sessions
+```
+
+Low-level discovery creates three items for every detected session:
+
+```text
+State
+Idle time
+Logon time
+```
+
+The collector is still executed only once per polling interval.
+
+The current template export format is **Zabbix 7.0**.
+
 ## Building
 
 Requirements:
@@ -51,6 +79,6 @@ Diagnostic messages are written to stderr.
 
 ## Zabbix
 
-See [ZABBIX_SETUP_EN.md](ZABBIX_SETUP_EN.md) for installation and Zabbix configuration.
+See [ZABBIX_SETUP_EN.md](ZABBIX_SETUP_EN.md) for installation, template import and item details.
 
 The recommended design is one master item running `rds-session.exe`, with dependent items and low-level discovery using the returned JSON.

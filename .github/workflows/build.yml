@@ -72,6 +72,7 @@ jobs:
           Copy-Item ".\rds-session.conf" ".\package\rds-session.conf"
           Copy-Item ".\README.md" ".\package\README.md"
           Copy-Item ".\ZABBIX_SETUP_EN.md" ".\package\ZABBIX_SETUP_EN.md"
+          Copy-Item ".\zabbix_template_rds_sessions.yaml" ".\package\zabbix_template_rds_sessions.yaml"
 
           Compress-Archive -Path ".\package\*" -DestinationPath ".\dist\rds-session-windows-x64.zip" -CompressionLevel Optimal -Force
 
